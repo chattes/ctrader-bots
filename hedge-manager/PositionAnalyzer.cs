@@ -107,7 +107,29 @@ namespace cAlgo.Robots
 
         public static long CalculateVolumeToClose(Position position, double trimPercentage)
         {
-            return (long)Math.Round(position.VolumeInUnits * trimPercentage);
+            // Convert to lots for calculation
+            var positionLots = (double)position.VolumeInUnits / 100000.0; // Convert units to lots
+            var targetLotsToClose = positionLots * trimPercentage;
+            
+            // Round to nearest 0.01 lot increment (minimum lot size)
+            var roundedLots = Math.Round(targetLotsToClose, 2);
+            
+            // Convert back to units
+            var volumeToClose = (long)(roundedLots * 100000);
+            
+            // Ensure it's within position bounds
+            if (volumeToClose >= position.VolumeInUnits)
+            {
+                return (long)position.VolumeInUnits; // Close entire position
+            }
+            
+            // Ensure minimum lot size (0.01 = 1000 units)
+            if (volumeToClose < 1000L)
+            {
+                return (long)position.VolumeInUnits; // Close entire position if too small
+            }
+            
+            return volumeToClose;
         }
 
         public static string GetPositionSummary(Position position)

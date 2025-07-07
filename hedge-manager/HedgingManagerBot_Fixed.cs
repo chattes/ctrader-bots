@@ -110,7 +110,29 @@ namespace cAlgo.Robots
 
         public static long CalculateVolumeToClose(Position position, double trimPercentage)
         {
-            return (long)Math.Round(position.VolumeInUnits * trimPercentage);
+            // Convert to lots for calculation
+            var positionLots = (double)position.VolumeInUnits / 100000.0; // Convert units to lots
+            var targetLotsToClose = positionLots * trimPercentage;
+            
+            // Round to nearest 0.01 lot increment (minimum lot size)
+            var roundedLots = Math.Round(targetLotsToClose, 2);
+            
+            // Convert back to units
+            var volumeToClose = (long)(roundedLots * 100000);
+            
+            // Ensure it's within position bounds
+            if (volumeToClose >= position.VolumeInUnits)
+            {
+                return (long)position.VolumeInUnits; // Close entire position
+            }
+            
+            // Ensure minimum lot size (0.01 = 1000 units)
+            if (volumeToClose < 1000L)
+            {
+                return (long)position.VolumeInUnits; // Close entire position if too small
+            }
+            
+            return volumeToClose;
         }
 
         public static string GetPositionSummary(Position position)
@@ -317,17 +339,75 @@ namespace cAlgo.Robots
 
         private void TrimLosingPositions(List<Position> losingPositions)
         {
-            var currentPrice = Symbols.GetSymbol(MonitoredSymbol).Bid;
+            var symbol = Symbols.GetSymbol(MonitoredSymbol);
+            var currentPrice = symbol.Bid;
             var prioritizedPositions = PositionAnalyzer.PrioritizeLosingPositions(losingPositions, currentPrice);
 
             foreach (var position in prioritizedPositions)
             {
                 var volumeToClose = PositionAnalyzer.CalculateVolumeToClose(position, LosingPositionTrimPercentage);
                 
-                if (volumeToClose > 0)
+                // If calculated volume equals position volume, close entire position
+                if (volumeToClose >= position.VolumeInUnits)
                 {
+                    if (EnableLogging)
+                        Print($"Calculated volume {volumeToClose} >= position volume {position.VolumeInUnits}, closing entire position {position.Id}");
+                    ClosePositionWithRetry(position, null, $"losing position {position.Id}");
+                }
+                else if (volumeToClose > 0)
+                {
+                    var lotsToClose = (double)volumeToClose / 100000.0;
+                    if (EnableDetailedLogging)
+                        Print($"Trimming position {position.Id}: {volumeToClose} units ({lotsToClose:F2} lots) from {position.VolumeInUnits} units ({(double)position.VolumeInUnits/100000.0:F2} lots)");
                     ClosePositionWithRetry(position, volumeToClose, $"losing position {position.Id}");
                 }
+                else
+                {
+                    if (EnableLogging)
+                        Print($"Calculated volume {volumeToClose} invalid for position {position.Id}, skipping");
+                }
+            }
+        }
+
+        private bool IsValidPartialCloseVolume(Position position, long volumeToClose)
+        {
+            try
+            {
+                var symbol = Symbols.GetSymbol(position.SymbolName);
+                var minVolume = symbol.VolumeInUnitsMin;
+                
+                // Check if volume to close meets minimum requirements
+                if (volumeToClose < minVolume)
+                {
+                    if (EnableDetailedLogging)
+                        Print($"Volume to close {volumeToClose} is below minimum {minVolume}");
+                    return false;
+                }
+                
+                // Check if remaining volume after close meets minimum requirements
+                var remainingVolume = position.VolumeInUnits - volumeToClose;
+                if (remainingVolume > 0 && remainingVolume < minVolume)
+                {
+                    if (EnableDetailedLogging)
+                        Print($"Remaining volume {remainingVolume} would be below minimum {minVolume}");
+                    return false;
+                }
+                
+                // Check if volume to close exceeds position volume
+                if (volumeToClose > position.VolumeInUnits)
+                {
+                    if (EnableDetailedLogging)
+                        Print($"Volume to close {volumeToClose} exceeds position volume {position.VolumeInUnits}");
+                    return false;
+                }
+                
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (EnableDetailedLogging)
+                    Print($"Error validating volume: {ex.Message}");
+                return false;
             }
         }
 
